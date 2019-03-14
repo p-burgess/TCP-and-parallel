@@ -1,5 +1,4 @@
-# sockets
-various unix socket programs
+various C programs
 
 
 client-cli      - console for tcp client
