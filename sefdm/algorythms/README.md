@@ -1,1 +1,1 @@
-various algorythms created to test their performance
+experiments with lists and nodes
