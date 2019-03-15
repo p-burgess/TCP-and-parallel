@@ -15,9 +15,9 @@ void swap(int *x,int *y)
 	*y = temp;
 }
 
-void bublesort(int list[], int n)
+void bubblesort(int list[], int n)
 {
-	int i,j;
+	int i, j;
 	for(i=0;i<(n-1);i++)
 		for(j=0;j<(n-(i+1));j++)
 			if(list[j] > list[j+1])
@@ -33,13 +33,11 @@ void printlist(int list[],int n)
  
 int main(int argc, char *argv[])
 {
-	const int MAX_ELEMENTS = 100;
-	int list[MAX_ELEMENTS];
+//	const int MAX_ELEMENTS = 100;
+	int list[999];
 
 	int i = 0, n = 0;
-	n = atoi(argv[1]);
-	n = (n > MAX_ELEMENTS) ? MAX_ELEMENTS : n;
-
+	n=atoi(argv[1]);
 	const int m=10000;
 
 	printf("command line argument: %d\n", n);
@@ -51,20 +49,20 @@ int main(int argc, char *argv[])
 	for(i=0; i < n; i++)
 	{
 		list[i] = rand();
-		printf("random number %d is %d\n", i+1, list[i]);
-	}
+		printf("random number %d is %d\n", i, list[i]);
+	};
 
     
-//	printf("The list before sorting is:\n");
-//	printlist(list, n);
+//	printf("The list);
+	printlist(list, n);
  
-	// sort the list
-	bublesort(list, n);
+	// sort the list;
+	bubblesort(list, n);
 
 	// print the result
-	printf("The list after sorting using bubble sorting algorithm:\n");
-	printlist(list, n);
+//	printf("The list after sorting using bubble sorting algorithm:\n");
+//	printlist(list,MAX_ELEMENTS);
 
-	printf("This Algorithym took %d milliseconds\n\n\n", clock());
+	printf("This Algorithym took %d milliseconds to execute\n\n\n", clock());
 	return EXIT_SUCCESS;
 }
