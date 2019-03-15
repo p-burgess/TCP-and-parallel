@@ -1,0 +1,268 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include "control.c"
+#include "queue.c"
+#include "dbug.h"
+
+#define NUM_PRODUCER 2
+#define NUM_CONSUMER 2
+#define NUM_RESPONDER 2
+
+/* the work_queue holds tasks for the various threads to complete. */
+struct work_queue {
+  data_control control;
+  queue work;
+} wq;
+/* the job_queue holds connection data that will be returned to the client. */
+struct job_queue {
+	data_control control;
+	queue work;
+} jq;
+/* I added a job number to the work node.  Normally, the work node
+   would contain additional data that needed to be processed. */
+typedef struct work_node {
+  struct node *next;
+  int job;
+  unsigned int worknum;
+  unsigned int jobnum;
+  unsigned int respnum;
+} wnode;
+
+/* I added a job number to the work node.  Normally, the work node
+would contain additional data that needed to be processed. */
+/*typedef struct job_node {
+	struct node *next;
+	int job;
+	unsigned int worknum;
+	unsigned int jobnum;
+} jnode;*/
+/* the cleanup queue holds stopped threads.  Before a thread
+   terminates, it adds itself to this list.  Since the main thread is
+   waiting for changes in this list, it will then wake up and clean up
+   the newly terminated thread. */
+struct cleanup_queue {
+  data_control control;
+  queue cleanup;
+} cq;
+/* I added a thread number (for debugging/instructional purposes) and
+   a thread id to the cleanup node.  The cleanup node gets passed to
+   the new thread on startup, and just before the thread stops, it
+   attaches the cleanup node to the cleanup queue.  The main thread
+   monitors the cleanup queue and is the one that performs the
+   necessary cleanup. */
+typedef struct cleanup_node {
+  struct node *next;
+  int threadnum;
+  pthread_t tid;
+} cnode;
+void *responder (void *myarg) {
+	wnode *myjob;
+	cnode *mynode;
+	mynode=(cnode *) myarg;
+	struct timespec time;
+	time.tv_sec = 0;			
+	time.tv_nsec = 700;
+	pthread_mutex_lock(&jq.control.mutex);
+	while (jq.control.active) {
+		while (jq.work.head==NULL && jq.control.active) {
+			pthread_cond_wait(&jq.control.cond, &jq.control.mutex);
+		}
+		if (!jq.control.active) 
+			break;
+		//we got something!
+		myjob=(wnode *) queue_get(&jq.work);
+		myjob->respnum=pthread_self();
+		pthread_mutex_unlock(&jq.control.mutex);
+		printf("Thread number %d:%u processing job %d from TID %u\n",mynode->threadnum,(unsigned int)myjob->respnum,myjob->job,(unsigned int)myjob->jobnum);
+		free(myjob);
+		pthread_mutex_lock(&jq.control.mutex);
+	}
+	pthread_mutex_unlock(&jq.control.mutex);
+	pthread_mutex_lock(&cq.control.mutex);
+	queue_put(&cq.cleanup,(node *) mynode);
+	pthread_mutex_unlock(&cq.control.mutex);
+	pthread_cond_signal(&cq.control.cond);
+	printf("thread %d shutting down...\n",mynode->threadnum);
+	return NULL;
+}
+void *consumer (void *myarg) {
+	wnode *mywork;
+	cnode *mynode;
+	mynode=(cnode *) myarg;
+	struct timespec time;
+	time.tv_sec = 0;			
+	time.tv_nsec = 700;
+	pthread_mutex_lock(&wq.control.mutex);
+	while (wq.control.active) {
+		while (wq.work.head==NULL && wq.control.active) {
+			pthread_cond_wait(&wq.control.cond, &wq.control.mutex);
+		}
+		if (!wq.control.active) 
+			break;
+		//we got something!
+		mywork=(wnode *) queue_get(&wq.work);
+		mywork->jobnum=pthread_self();
+		pthread_mutex_unlock(&wq.control.mutex);
+//		nanosleep (&time,NULL);
+		pthread_mutex_lock(&jq.control.mutex);
+		queue_put(&jq.work,(node *) mywork);
+		pthread_mutex_unlock(&jq.control.mutex);
+		pthread_cond_signal(&jq.control.cond);
+		printf("Thread number %d:%u processing job %d from %u\n",mynode->threadnum,(unsigned int)mywork->jobnum,mywork->job,(unsigned int)mywork->worknum);
+		pthread_mutex_lock(&wq.control.mutex);
+	}
+	pthread_mutex_unlock(&wq.control.mutex);
+	pthread_mutex_unlock(&jq.control.mutex);
+	pthread_mutex_lock(&cq.control.mutex);
+	queue_put(&cq.cleanup,(node *) mynode);
+	pthread_mutex_unlock(&cq.control.mutex);
+	pthread_cond_signal(&cq.control.cond);
+	printf("thread %d shutting down...\n",mynode->threadnum);
+	return NULL;
+}
+void *producer(void *myarg) {
+	wnode *mywork;
+	cnode *mynode;
+	mynode=(cnode *) myarg;
+
+	int x;
+	
+	struct timespec time;
+	time.tv_sec = 0;			
+	time.tv_nsec = 2500;
+	pthread_mutex_lock(&wq.control.mutex);
+	while (wq.control.active) {
+		for (x=0;x<6;x++) {
+			mywork=malloc(sizeof(wnode));
+			if (!mywork) {
+				printf("ouch! can't malloc!\n");
+				pthread_mutex_unlock(&wq.control.mutex);
+				break;
+			}
+			mywork->job=x;
+			mywork->worknum=pthread_self();
+			queue_put(&wq.work,(node *) mywork);
+		}
+		pthread_mutex_unlock(&wq.control.mutex);
+		pthread_cond_signal(&wq.control.cond);
+		pthread_mutex_lock(&wq.control.mutex);
+		nanosleep (&time,NULL);
+	}
+	pthread_mutex_unlock(&wq.control.mutex);
+	pthread_mutex_lock(&cq.control.mutex);
+	queue_put(&cq.cleanup,(node *) mynode);
+	pthread_mutex_unlock(&cq.control.mutex);
+	pthread_cond_signal(&cq.control.cond);
+	printf("thread %d shutting down...\n",mynode->threadnum);
+	return NULL;
+}
+int numthreads;
+int join_threads(void) {
+  cnode *curnode;
+  int num_threads=numthreads;
+  printf("joining threads...\n");
+  while (numthreads) {
+    pthread_mutex_lock(&cq.control.mutex);
+    /* below, we sleep until there really is a new cleanup node.  This
+       takes care of any false wakeups... even if we break out of
+       pthread_cond_wait(), we don't make any assumptions that the
+       condition we were waiting for is true.  */
+    while (cq.cleanup.head==NULL) {
+      pthread_cond_wait(&cq.control.cond,&cq.control.mutex);
+    }
+    /* at this point, we hold the mutex and there is an item in the
+       list that we need to process.  First, we remove the node from
+       the queue.  Then, we call pthread_join() on the tid stored in
+       the node.  When pthread_join() returns, we have cleaned up
+       after a thread.  Only then do we free() the node, decrement the
+       number of additional threads we need to wait for and repeat the
+       entire process, if necessary */
+      curnode = (cnode *) queue_get(&cq.cleanup);
+      pthread_mutex_unlock(&cq.control.mutex);
+      pthread_join(curnode->tid,(void *)curnode);
+      printf("joined with thread %d\n",curnode->threadnum);
+      free(curnode);
+      numthreads--;
+  }
+  return num_threads;
+}
+int create_threads(void) {
+	int x;
+	cnode *curnode;
+	for (x=0; x<NUM_RESPONDER; x++) {
+		curnode=malloc(sizeof(cnode));
+		if (!curnode)
+			return 1;
+		curnode->threadnum=numthreads;
+		if (pthread_create(&curnode->tid, NULL, responder, (void *) curnode))
+			return 1;
+		printf("created responder %d\n",curnode->threadnum);
+		numthreads++;
+	}
+	for (x=0; x<NUM_PRODUCER; x++) {
+		curnode=malloc(sizeof(cnode));
+		if (!curnode)
+			return 1;
+		curnode->threadnum=numthreads;
+		if (pthread_create(&curnode->tid, NULL, producer, (void *) curnode))
+			return 1;
+		printf("created producer %d\n",curnode->threadnum);
+		numthreads++;
+  }
+  for (x=0; x<NUM_CONSUMER; x++) {
+		curnode=malloc(sizeof(cnode));
+		if (!curnode)
+			return 1;
+		curnode->threadnum=numthreads;
+		if (pthread_create(&curnode->tid, NULL, consumer, (void *) curnode))
+			return 1;
+		printf("created consumer %d\n",curnode->threadnum);
+		numthreads++;
+	}
+	return 0;
+}
+void initialize_structs(void) {
+	numthreads=0;
+	if (control_init(&wq.control))
+		dabort();
+	queue_init(&wq.work);
+	if (control_init(&jq.control)) {
+		control_destroy(&wq.control);
+		dabort();
+	}
+	queue_init(&jq.work);
+	if (control_init(&cq.control)) {
+		control_destroy(&wq.control);
+		control_destroy(&jq.control);
+		dabort();
+	}
+	queue_init(&cq.cleanup);
+	control_activate(&jq.control);
+	control_activate(&wq.control);
+	control_activate(&cq.control);
+}
+void cleanup_structs(void) {
+	control_destroy(&wq.control);
+	control_destroy(&jq.control);
+	control_destroy(&cq.control);
+}
+int main(void) {
+	initialize_structs();
+	/* CREATION */
+	if (create_threads()) {
+		printf("Error starting threads... cleaning up.\n");
+		join_threads();
+		dabort();
+	}
+	printf("sleeping...\n");
+	sleep(1);
+	printf("deactivating work queue...\n");
+	control_deactivate(&wq.control);
+	control_deactivate(&jq.control);
+	/* CLEANUP  */
+	printf ("%d threads ended.\n",join_threads());
+	cleanup_structs();
+	sleep (1);
+	exit (0);
+}
