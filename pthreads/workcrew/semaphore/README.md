@@ -1,1 +1,1 @@
-Workcrew from parent using semaphoers to manage threads
+Workcrew from parent using semaphores to manage threads
