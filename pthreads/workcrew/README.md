@@ -1,4 +1,4 @@
-workcrew(Daniel Robbins-Gentoo) program reconfigured to use pthread_mutex, fifo queues and select().
+workcrew(Daniel Robbins-Gentoo) program reconfigured to use multiple fifo queues and select().
 
 A thread catches the potato, passes to another thread that peels it, it passes to another thread that puts it in the corect bucket; with logging and signal handling.
 
